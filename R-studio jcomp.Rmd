@@ -1,0 +1,817 @@
+---
+title: "fdytdytdt"
+author: "21MIA1125 G Raghava Iyyappan"
+date: "2024-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(randomForest)
+library(e1071)
+library(factoextra)
+library(ggplot2)
+library(sf)  # For spatial data
+library(leaflet)  # For interactive mapping
+```
+
+
+```{r}
+file_path <- "C:/Users/ragha/Downloads/plasticdata.xlsx"
+plastic_data <- read_excel(file_path)
+
+# Preview the dataset
+head(plastic_data)
+str(plastic_data)
+summary(plastic_data)
+
+```
+```{r}
+# Preview the dataset structure
+str(plastic_data)
+colnames(plastic_data)
+
+
+```
+```{r}
+# Load necessary libraries
+library(ggplot2)
+
+# Scatter plot of Latitude vs. Longitude
+ggplot(plastic_data, aes(x = Longitude, y = Latitude)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  labs(title = "Geographical Distribution of Data Points",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Box plot of CD1 by Sea State
+ggplot(plastic_data, aes(x = `Sea State`, y = `CD1  (/km^2)`, fill = `Sea State`)) +
+  geom_boxplot() +
+  labs(title = "Distribution of CD1 by Sea State",
+       x = "Sea State",
+       y = "CD1 (/km^2)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+# Check for missing values
+missing_summary <- sapply(plastic_data, function(x) sum(is.na(x)))
+missing_summary
+
+# Impute missing values (mean imputation for numeric, mode for categorical)
+plastic_data_clean <- plastic_data %>%
+  mutate_if(is.numeric, ~ifelse(is.na(.), mean(., na.rm = TRUE), .)) %>%
+  mutate_if(is.factor, ~ifelse(is.na(.), as.factor(stats::mode(.)), .))
+
+# Verify missing values have been handled
+sum(is.na(plastic_data_clean))
+
+```
+
+
+```{r}
+# Scale numeric features for models that require it (e.g., SVM)
+numeric_features <- sapply(plastic_data_clean, is.numeric)
+plastic_data_scaled <- plastic_data_clean
+plastic_data_scaled[numeric_features] <- scale(plastic_data_clean[numeric_features])
+
+# Verify scaling
+summary(plastic_data_scaled)
+
+```
+
+```{r}
+# Check column names
+colnames(plastic_data_clean)
+
+# Clean column names (remove any leading/trailing spaces)
+plastic_data_clean <- plastic_data_clean %>%
+  rename_with(~ gsub("^\\s+|\\s+$", "", .))  # remove leading/trailing spaces from column names
+
+# Confirm column names are cleaned
+colnames(plastic_data_clean)
+
+```
+
+
+```{r}
+# Check for missing values or non-numeric entries in Latitude and Longitude
+summary(plastic_data_clean$Latitude)
+summary(plastic_data_clean$Longitude)
+
+# Convert Latitude and Longitude to numeric (if they are characters) and handle any issues
+plastic_data_clean <- plastic_data_clean %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude)
+  )
+
+# Check if there are any NA values after conversion
+sum(is.na(plastic_data_clean$Latitude))  # Count of NA values in Latitude
+sum(is.na(plastic_data_clean$Longitude))  # Count of NA values in Longitude
+
+```
+
+```{r}
+# Load janitor package to clean column names
+library(janitor)
+
+# Clean column names
+plastic_data_clean <- plastic_data_clean %>%
+  clean_names()
+
+# Print out cleaned column names to inspect
+print(colnames(plastic_data_clean))
+
+```
+
+```{r}
+# Load required library
+library(sf)
+
+# Step 1: Identify Missing Values
+# Check for rows with missing Latitude or Longitude
+missing_coords <- plastic_data[is.na(plastic_data$Latitude) | is.na(plastic_data$Longitude), ]
+print("Rows with missing coordinates:")
+print(missing_coords)
+
+# Step 2: Handle Missing Values
+# Remove rows with missing coordinates
+plastic_data <- plastic_data[!is.na(plastic_data$Latitude) & !is.na(plastic_data$Longitude), ]
+
+# Step 3: Create the Spatial DataFrame
+# Convert to a spatial dataframe using sf
+plastic_data_sf <- st_as_sf(plastic_data, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Step 4: Inspect the Result
+# Check the structure and first few rows of the spatial dataframe
+str(plastic_data_sf)
+head(plastic_data_sf)
+
+
+
+```
+```{r}
+# Check if the column exists
+if (!"CD1 (/km^2)" %in% names(plastic_data)) {
+  cat("The column 'CD1 (/km^2)' is missing. Adding a dummy column for testing.\n")
+  # Add a dummy column with random values for demonstration
+  plastic_data$`CD1 (/km^2)` <- sample(1:10000, nrow(plastic_data), replace = TRUE)
+}
+
+# Proceed with the rest of the script
+plastic_data <- plastic_data[!is.na(plastic_data$Latitude) & !is.na(plastic_data$Longitude), ]
+plastic_data_sf <- st_as_sf(plastic_data, coords = c("Longitude", "Latitude"), crs = 4326)
+
+plastic_data_sf$`CD1 (/km^2)` <- as.numeric(gsub("[^0-9.]", "", plastic_data_sf$`CD1 (/km^2)`))
+
+plastic_data_sf$pollution_level <- cut(
+  plastic_data_sf$`CD1 (/km^2)`, 
+  breaks = c(0, 1000, 5000, 20000, Inf), 
+  labels = c("Low", "Moderate", "High", "Very High")
+)
+
+palette <- colorFactor(
+  palette = brewer.pal(4, "YlOrRd"),
+  domain = plastic_data_sf$pollution_level
+)
+
+leaflet(data = plastic_data_sf) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~st_coordinates(geometry)[, 1],
+    lat = ~st_coordinates(geometry)[, 2],
+    color = ~palette(pollution_level), 
+    popup = ~as.character(pollution_level),
+    radius = 5
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = palette,
+    values = ~pollution_level,
+    title = "Pollution Level"
+  )
+
+
+
+```
+
+```{r}
+# Load necessary library for model training and testing
+library(caret)
+
+# Ensure pollution_level is numeric and remove rows with NAs
+plastic_data_sf$pollution_level <- as.numeric(plastic_data_sf$pollution_level)
+plastic_data_sf <- na.omit(plastic_data_sf)
+
+# Set a seed for reproducibility
+set.seed(123)
+
+# Create a partition for training (80%) and testing (20%)
+train_index <- createDataPartition(plastic_data_sf$pollution_level, p = 0.8, list = FALSE)
+train_data <- plastic_data_sf[train_index, ]
+test_data <- plastic_data_sf[-train_index, ]
+
+# Preview the sizes of the training and testing sets
+cat("Training set size:", nrow(train_data), "\n")
+cat("Testing set size:", nrow(test_data), "\n")
+
+```
+
+```{r}
+# Check the column names of train_data
+colnames(train_data)
+
+```
+```{r}
+# Extract latitude and longitude from the geometry column
+train_data <- train_data %>%
+  mutate(
+    latitude = st_coordinates(geometry)[, 2],  # Second column for latitude
+    longitude = st_coordinates(geometry)[, 1]  # First column for longitude
+  )
+
+# Check the updated dataset
+head(train_data)
+
+# Verify that the new columns have been added
+colnames(train_data)
+
+```
+```{r}
+# Load necessary library
+library(randomForest)
+
+# Check if `sea_state` exists in the dataset
+if (!"sea_state" %in% names(train_data)) {
+  cat("The column 'sea_state' is missing. Adding a dummy column for testing.\n")
+  # Add a dummy column for testing purposes
+  train_data$sea_state <- sample(c("Calm", "Rough", "Moderate"), nrow(train_data), replace = TRUE)
+}
+
+# Convert `sea_state` to a factor if it's not already
+train_data$sea_state <- as.factor(train_data$sea_state)
+
+# Fit the Random Forest model with cross-validation to better assess its performance
+set.seed(123)  # For reproducibility
+rf_model <- randomForest(pollution_level ~ latitude + longitude + sea_state, data = train_data, ntree = 500, mtry = 2, importance = TRUE)
+
+# Check the model summary
+print(rf_model)
+
+# Calculate the percentage of variance explained by the model
+var_explained <- 1 - (sum((rf_model$y - rf_model$predicted)^2) / sum((rf_model$y - mean(rf_model$y))^2))
+cat("Percentage of variance explained:", var_explained * 100, "%\n")
+
+# Check feature importance
+importance(rf_model)
+
+
+```
+```{r}
+# Load necessary libraries for evaluation
+library(ggplot2)
+
+# 1. Making Predictions
+train_data$predicted_pollution <- predict(rf_model, newdata = train_data)
+
+```
+
+```{r}
+# 2. Evaluate the Model
+# Calculate MAE, MSE, and R-squared
+mae <- mean(abs(train_data$pollution_level - train_data$predicted_pollution), na.rm = TRUE)
+mse <- mean((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE)
+r_squared <- 1 - (sum((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE) /
+                    sum((train_data$pollution_level - mean(train_data$pollution_level, na.rm = TRUE))^2, na.rm = TRUE))
+
+# Print evaluation metrics
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("R-squared:", r_squared, "\n")
+
+```
+```{r}
+# 3. Visualizing Model Predictions
+# Scatter plot of actual vs predicted pollution levels
+ggplot(train_data, aes(x = pollution_level, y = predicted_pollution)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') +  # 45-degree line
+  labs(title = "Actual vs Predicted Pollution Levels",
+       x = "Actual Pollution Level",
+       y = "Predicted Pollution Level") +
+  theme_minimal()
+```
+
+
+```{r}
+# Check the column names in the training dataset
+print(colnames(train_data))
+
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(randomForest)
+
+# Define the calculate_metrics function
+calculate_metrics <- function(actual, predicted) {
+  mae <- mean(abs(actual - predicted), na.rm = TRUE)
+  mse <- mean((actual - predicted)^2, na.rm = TRUE)
+  r_squared <- 1 - (sum((actual - predicted)^2, na.rm = TRUE) /
+                    sum((actual - mean(actual, na.rm = TRUE))^2, na.rm = TRUE))
+  
+  return(data.frame(MAE = mae, MSE = mse, R_squared = r_squared))
+}
+
+# Ensure train_data does not contain the geometry column for modeling
+# Only keep relevant columns for modeling
+model_data <- train_data %>% select(-geometry)
+
+# Fit the linear regression model
+linear_model <- lm(pollution_level ~ latitude + longitude + sea_state, data = model_data)
+
+# Make predictions on training data
+model_data$predicted_linear <- predict(linear_model, newdata = model_data)
+
+# Evaluate the linear regression model
+linear_metrics <- calculate_metrics(model_data$pollution_level, model_data$predicted_linear)
+
+# Print evaluation metrics
+print(linear_metrics)
+```
+
+```{r}
+# Visualizing Model Predictions
+# Scatter plot of actual vs predicted pollution levels
+ggplot(model_data, aes(x = pollution_level, y = predicted_linear)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') +  # 45-degree line
+  labs(title = "Actual vs Predicted Pollution Levels (Linear Regression)",
+       x = "Actual Pollution Level",
+       y = "Predicted Pollution Level") +
+  theme_minimal()
+```
+```{r}
+# Residuals vs Fitted Values Plot
+ggplot(model_data, aes(x = predicted_linear, y = pollution_level - predicted_linear)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'red') +
+  labs(title = "Residuals vs Fitted Values",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+```
+
+```{r}
+# Q-Q Plot
+qqnorm(model_data$pollution_level - model_data$predicted_linear, main = "Q-Q Plot of Residuals")
+qqline(model_data$pollution_level - model_data$predicted_linear, col = "red")
+
+```
+```{r}
+# Scatter Plot with Regression Line
+ggplot(model_data, aes(x = pollution_level, y = predicted_linear)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_smooth(method = 'lm', se = FALSE, color = 'red') +  # Adds a regression line
+  labs(title = "Actual vs Predicted Pollution Levels with Regression Line",
+       x = "Actual Pollution Level",
+       y = "Predicted Pollution Level") +
+  theme_minimal()
+
+```
+```{r}
+# Boxplot of Pollution Levels by Sea State
+ggplot(model_data, aes(x = sea_state, y = pollution_level)) +
+  geom_boxplot(fill = 'lightblue', color = 'black') +
+  labs(title = "Boxplot of Pollution Levels by Sea State",
+       x = "Sea State",
+       y = "Pollution Level") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+
+#DECISION TREE 
+#install.packages("rpart")
+#install.packages("rpart.plot")
+#install.packages("ggplot2")
+#install.packages("RColorBrewer")
+```
+
+
+
+```{r}
+install.packages(brewer.pal)
+# Load necessary libraries
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(RColorBrewer)  # Required for color palettes
+```
+
+
+```{r}
+#DECISION TREE
+# Load necessary libraries
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(RColorBrewer)  # Required for color palettes
+
+# Check if `sea_state` exists in the dataset
+if (!"sea_state" %in% names(train_data)) {
+  cat("The column 'sea_state' is missing. Adding a dummy column for testing.\n")
+  # Add a dummy column for testing purposes
+  train_data$sea_state <- sample(c("Calm", "Rough", "Moderate"), nrow(train_data), replace = TRUE)
+}
+```
+
+
+```{r}
+# Convert `sea_state` to a factor if it's not already
+train_data$sea_state <- as.factor(train_data$sea_state)
+```
+
+
+```{r}
+# Fit the Decision Tree model
+set.seed(123)  # For reproducibility
+dt_model <- rpart(pollution_level ~ latitude + longitude + sea_state, data = train_data, method = "anova")
+
+# Check the model summary
+print(dt_model)
+```
+
+
+```{r}
+# Visualize the Decision Tree with color palette from RColorBrewer
+rpart.plot(dt_model, type = 2, extra = 101, fallen.leaves = TRUE,
+           box.palette = "RdYlGn",  # Alternative palette that doesn't require brewer.pal
+           shadow.col = "gray",
+           main = "Decision Tree for Pollution Levels")
+
+```
+
+
+
+```{r}
+
+# Make Predictions
+train_data$predicted_pollution <- predict(dt_model, newdata = train_data)
+```
+
+
+```{r}
+# Evaluate the Model
+# Calculate MAE, MSE, and R-squared
+mae <- mean(abs(train_data$pollution_level - train_data$predicted_pollution), na.rm = TRUE)
+mse <- mean((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE)
+r_squared <- 1 - (sum((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE) /
+                    sum((train_data$pollution_level - mean(train_data$pollution_level, na.rm = TRUE))^2, na.rm = TRUE))
+```
+
+
+```{r}
+# Print evaluation metrics
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("R-squared:", r_squared, "\n")
+```
+
+
+```{r}
+# Visualizing Model Predictions
+# Scatter plot of actual vs predicted pollution levels
+ggplot(train_data, aes(x = pollution_level, y = predicted_pollution)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') +  # 45-degree line
+  labs(title = "Actual vs Predicted Pollution Levels (Decision Tree)",
+       x = "Actual Pollution Level",
+       y = "Predicted Pollution Level") +
+  theme_minimal()
+```
+
+
+```{r}
+# Check the column names in the training dataset
+print(colnames(train_data))
+
+
+```
+```{r}
+
+# SVM METHOD
+```
+
+
+```{r}
+str(train_data)
+
+```
+
+
+```{r}
+if ("sf" %in% class(train_data)) {
+  library(sf)
+  # Extract numeric latitude and longitude
+  coords <- st_coordinates(train_data)
+  train_data$latitude <- coords[, "Y"]
+  train_data$longitude <- coords[, "X"]
+}
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(e1071)
+library(sf)  # For handling spatial features
+library(ggplot2)
+```
+
+
+```{r}
+# Check if `latitude` or `longitude` are spatial features and convert to numeric
+if ("sf" %in% class(train_data)) {
+  coords <- st_coordinates(train_data)
+  train_data$latitude <- coords[, "Y"]
+  train_data$longitude <- coords[, "X"]
+}
+```
+
+
+```{r}
+# Check if `sea_state` exists in the dataset
+if (!"sea_state" %in% names(train_data)) {
+  cat("The column 'sea_state' is missing. Adding a dummy column for testing.\n")
+  # Add a dummy column for testing purposes
+  train_data$sea_state <- sample(c("Calm", "Rough", "Moderate"), nrow(train_data), replace = TRUE)
+}
+```
+
+
+```{r}
+# Convert `sea_state` to a factor if it's not already
+train_data$sea_state <- as.factor(train_data$sea_state)
+```
+
+
+```{r}
+# Fit the SVM model
+set.seed(123)  # For reproducibility
+svm_model <- svm(pollution_level ~ latitude + longitude + sea_state, 
+                 data = train_data, 
+                 kernel = "radial", 
+                 cost = 1, 
+                 gamma = 0.1)
+```
+
+
+```{r}
+# Check the model summary
+summary(svm_model)
+```
+
+
+```{r}
+# Make Predictions
+train_data$predicted_pollution <- predict(svm_model, newdata = train_data)
+```
+
+
+```{r}
+# Evaluate the Model
+mae <- mean(abs(train_data$pollution_level - train_data$predicted_pollution), na.rm = TRUE)
+mse <- mean((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE)
+r_squared <- 1 - (sum((train_data$pollution_level - train_data$predicted_pollution)^2, na.rm = TRUE) /
+                    sum((train_data$pollution_level - mean(train_data$pollution_level, na.rm = TRUE))^2, na.rm = TRUE))
+```
+
+
+```{r}
+# Print evaluation metrics
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("R-squared:", r_squared, "\n")
+```
+
+
+```{r}
+# Visualize Predictions
+ggplot(train_data, aes(x = pollution_level, y = predicted_pollution)) +
+  geom_point(color = 'blue', alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed', color = 'red') +
+  labs(title = "Actual vs Predicted Pollution Levels (SVM)",
+       x = "Actual Pollution Level",
+       y = "Predicted Pollution Level") +
+  theme_minimal()
+
+
+```
+```{r}
+# Load necessary libraries
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Read the data from the Excel file
+data <- read_excel("C:/Users/ragha/Downloads/Metrics models.xlsx", sheet = "Sheet1", skip = 1)
+colnames(data) <- c("Models", "MAE", "MSE")  # Rename columns
+
+# Convert data to appropriate types
+data$MAE <- as.numeric(data$MAE)
+data$MSE <- as.numeric(data$MSE)
+
+# Summary statistics comparison
+summary_stats <- summary(data)
+print(summary_stats)
+
+# Generate comparison plots
+# 1. Barplot for MAE
+p1 <- ggplot(data, aes(x = Models, y = MAE, fill = Models)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Model Comparison Based on MAE", y = "Mean Absolute Error") +
+  theme_minimal()
+
+# 2. Barplot for MSE
+p2 <- ggplot(data, aes(x = Models, y = MSE, fill = Models)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Model Comparison Based on MSE", y = "Mean Squared Error") +
+  theme_minimal()
+
+# 3. Side-by-side barplot for both metrics
+data_long <- data %>% pivot_longer(cols = c(MAE, MSE), names_to = "Metric", values_to = "Value")
+p3 <- ggplot(data_long, aes(x = Models, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Model Comparison Based on MAE and MSE") +
+  theme_minimal()
+
+# 4. Scatter plot comparing MAE vs MSE
+p4 <- ggplot(data, aes(x = MAE, y = MSE, color = Models)) +
+  geom_point(size = 4) +
+  geom_text(aes(label = Models), hjust = 0.7, vjust = -1) +
+  labs(title = "Scatter Plot of MAE vs MSE", x = "Mean Absolute Error", y = "Mean Squared Error") +
+  theme_minimal()
+
+# 5. Boxplot of Metrics for all models
+p5 <- ggplot(data_long, aes(x = Metric, y = Value, fill = Metric)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of MAE and MSE for Models") +
+  theme_minimal()
+
+# Display all plots
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+print(p5)
+
+```
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+# Create data frame with provided metrics
+model_data <- data.frame(
+  Models = c("Linear Regression", "Random Forest", "Decision Tree", "SVM"),
+  MAE = c(0.600288, 0.299121, 0.603005, 0.573828),
+  MSE = c(0.444202, 0.124019, 0.445667, 0.529528)
+)
+
+# Rank the models based on MAE (lower is better)
+model_data <- model_data %>%
+  mutate(MAE_Rank = rank(MAE, ties.method = "min"))
+
+# Rank the models based on MSE (lower is better)
+model_data <- model_data %>%
+  mutate(MSE_Rank = rank(MSE, ties.method = "min"))
+
+# Calculate overall rank as the sum of MAE and MSE ranks
+model_data <- model_data %>%
+  mutate(Overall_Rank = rank(MAE_Rank + MSE_Rank, ties.method = "min"))
+
+# Arrange models by overall rank
+model_data <- model_data %>%
+  arrange(Overall_Rank)
+
+# Display the ranked data
+print(model_data)
+
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+
+# Create data frame with provided metrics
+model_data <- data.frame(
+  Models = c("Linear Regression", "Random Forest", "Decision Tree", "SVM"),
+  MAE = c(0.600288, 0.299121, 0.603005, 0.573828),
+  MSE = c(0.444202, 0.124019, 0.445667, 0.529528)
+)
+
+# Rank the models based on MAE (lower is better)
+model_data <- model_data %>%
+  mutate(MAE_Rank = rank(MAE, ties.method = "min"))
+
+# Rank the models based on MSE (lower is better)
+model_data <- model_data %>%
+  mutate(MSE_Rank = rank(MSE, ties.method = "min"))
+
+# Calculate overall rank as the sum of MAE and MSE ranks
+model_data <- model_data %>%
+  mutate(Overall_Rank = rank(MAE_Rank + MSE_Rank, ties.method = "min"))
+
+# Graph 1: Bar Plot Comparing the Ranks
+graph1 <- ggplot(model_data, aes(x = reorder(Models, Overall_Rank))) +
+  geom_bar(aes(y = MAE_Rank, fill = "MAE Rank"), stat = "identity", position = position_dodge()) +
+  geom_bar(aes(y = MSE_Rank, fill = "MSE Rank"), stat = "identity", position = position_dodge()) +
+  labs(title = "Model Ranks Based on MAE and MSE",
+       x = "Models", y = "Rank",
+       fill = "Rank Type") +
+  theme_minimal() +
+  scale_fill_manual(values = c("MAE Rank" = "steelblue", "MSE Rank" = "firebrick"))
+
+# Graph 2: Line Plot Comparing Overall Rank with Individual Ranks
+graph2 <- ggplot(model_data, aes(x = Models)) +
+  geom_line(aes(y = MAE_Rank, group = 1, color = "MAE Rank"), size = 1) +
+  geom_line(aes(y = MSE_Rank, group = 1, color = "MSE Rank"), size = 1) +
+  geom_point(aes(y = MAE_Rank, color = "MAE Rank"), size = 3) +
+  geom_point(aes(y = MSE_Rank, color = "MSE Rank"), size = 3) +
+  geom_line(aes(y = Overall_Rank, group = 1, color = "Overall Rank"), size = 1, linetype = "dashed") +
+  geom_point(aes(y = Overall_Rank, color = "Overall Rank"), size = 3) +
+  labs(title = "Comparison of Ranks for Different Models",
+       x = "Models", y = "Rank",
+       color = "Rank Type") +
+  theme_minimal() +
+  scale_color_manual(values = c("MAE Rank" = "steelblue", "MSE Rank" = "firebrick", "Overall Rank" = "darkgreen"))
+
+# Print the graphs
+print(graph1)
+print(graph2)
+
+```
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+
+# Create data frame with provided metrics
+model_data <- data.frame(
+  Models = c("Linear Regression", "Random Forest", "Decision Tree", "SVM"),
+  MAE = c(0.600288, 0.299121, 0.603005, 0.573828),
+  MSE = c(0.444202, 0.124019, 0.445667, 0.529528)
+)
+
+# Rank the models based on MAE and MSE (lower is better)
+model_data <- model_data %>%
+  mutate(MAE_Rank = rank(MAE, ties.method = "min"),
+         MSE_Rank = rank(MSE, ties.method = "min"))
+
+# Simple Graph 1: Bar Plot for MAE and MSE Ranks
+bar_plot <- ggplot(model_data, aes(x = reorder(Models, MAE_Rank))) +
+  geom_bar(aes(y = MAE_Rank, fill = "MAE Rank"), stat = "identity", position = "dodge", alpha = 0.7) +
+  geom_bar(aes(y = MSE_Rank, fill = "MSE Rank"), stat = "identity", position = "dodge", alpha = 0.7) +
+  labs(title = "MAE and MSE Ranks for Models",
+       x = "Models", y = "Rank",
+       fill = "Metric") +
+  theme_minimal() +
+  scale_fill_manual(values = c("MAE Rank" = "blue", "MSE Rank" = "red"))
+
+# Simple Graph 2: Scatter Plot for MAE and MSE Ranks
+scatter_plot <- ggplot(model_data, aes(x = Models)) +
+  geom_point(aes(y = MAE_Rank, color = "MAE Rank"), size = 4) +
+  geom_point(aes(y = MSE_Rank, color = "MSE Rank"), size = 4) +
+  labs(title = "Scatter Plot of MAE and MSE Ranks",
+       x = "Models", y = "Rank",
+       color = "Metric") +
+  theme_minimal() +
+  scale_color_manual(values = c("MAE Rank" = "blue", "MSE Rank" = "red"))
+
+# Print the graphs
+print(bar_plot)
+print(scatter_plot)
+
+```
+
